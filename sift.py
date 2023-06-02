@@ -1,6 +1,9 @@
 from PIL import Image, ImageFilter, ImageOps, ImageChops
 import numpy as np
 import math
+import time
+
+
 
 class SIFT:
     """
@@ -227,26 +230,40 @@ class SIFT:
             neighbors = []
             for i in range(-1, 2):
                 for j in range(-1, 2):
-                    for k in range(-1, 2):
-                        if (i == 0 and j == 0 and k == 0):
-                            continue
-                        neighbors.append(diff[o][s + i].getpixel((x + j, y + k)))
+                    neighbors.append(diff[o][s + 1].getpixel((x + i, y + j)))
+                    neighbors.append(diff[o][s - 1].getpixel((x + i, y + j)))
             return neighbors
 
         extrema = []
         extrema_count = 0
+        t = time.process_time()
+        cutoff = 0.8 * self.dog_threshold
         for o in range(1, self.n_oct + 1):
             for s in range(1, self.n_spo + 1):
+                img = np.array(diff[o][s])
                 M_o = diff[o][s].width
                 N_o = diff[o][s].height
-                for x in range(1, M_o - 1):
-                    for y in range(1, N_o - 1):
-                        curr = diff[o][s].getpixel((x,y))
+                for y in range(1, N_o - 1):
+                    row = img[y]
+                    for x in range(1, M_o - 1):
+                        curr = row[x]
+
+                        if curr < cutoff:
+                            continue
+
+                        immediate_neighbors = img[y-1:y+2:1, x-1:x+2:1]
+                        if not (curr == immediate_neighbors.max() or curr == immediate_neighbors.min()):
+                            continue
+
                         neighbors = calculate_neighbors(o,s,x,y)
                         if curr > max(neighbors) or curr < min(neighbors):
                             extrema.append((o,s,x,y))
                             extrema_count += 1
                             SIFT.write_log(log_file, f"Extrema {extrema_count}: ({o},{s},{x},{y})")
+
+                print("Layer time:", time.process_time() - t)
+            print("Octave time:", time.process_time() - t)
+
         return extrema
 
 
@@ -283,9 +300,9 @@ class SIFT:
         def quadratic_interpolation(o,se,me,ne):
             g = np.zeros((3,1))
             h = np.zeros((3,3))
-            g[0] = (diff[o][se + 1].getpixel((me, ne)) - diff[o][se + 1].getpixel((me, ne))) / 2
-            g[1] = (diff[o][se].getpixel((me + 1, ne)) - diff[o][s].getpixel((me - 1, ne))) / 2
-            g[2] = (diff[o][se].getpixel((me, ne + 1)) - diff[o][s].getpixel((me, ne - 1))) / 2
+            g[0][0] = (diff[o][se + 1].getpixel((me, ne)) - diff[o][se + 1].getpixel((me, ne))) / 2
+            g[1][0] = (diff[o][se].getpixel((me + 1, ne)) - diff[o][s].getpixel((me - 1, ne))) / 2
+            g[2][0] = (diff[o][se].getpixel((me, ne + 1)) - diff[o][s].getpixel((me, ne - 1))) / 2
             
             h = np.zeros((3,3))
             h11 = diff[o][se + 1].getpixel((me, ne)) + diff[o][se - 1].getpixel((me, ne)) - 2*diff[o][se].getpixel((me, ne))
@@ -338,28 +355,31 @@ class SIFT:
             while iterations < 5:
                 iterations += 1
                 SIFT.write_log(log_file, f"Iteration {iterations}")
-                qi = quadratic_interpolation(o_e,s,m,n)
-                if qi is None:
-                    SIFT.write_log(log_file, "Quadratic failed. Singular matrix.")
+                try:
+                    qi = quadratic_interpolation(o_e,s,m,n)
+                    if qi is None:
+                        SIFT.write_log(log_file, "Quadratic failed. Singular matrix.")
+                        break
+                    (alpha, omega) = qi
+                    gamma_o_e = ((2 ** (o_e - 1)) * self.gamma_min)
+                    sigma = (gamma_o_e * self.gamma_min) * self.sig_min * 2**((alpha[0][0] + s)/self.n_spo)
+                    x = gamma_o_e * (alpha[1][0] + m)
+                    y = gamma_o_e * (alpha[2][0] + n)
+
+                    SIFT.write_log(log_file, f"Comparing fields: o {o_e}:{gamma_o_e} gamma")
+                    SIFT.write_log(log_file, f"m {m}:{x} x")
+                    SIFT.write_log(log_file, f"n {n}:{y} y")
+                    s = int(round(s + alpha[0][0]))
+                    m = int(round(m + alpha[1][0]))
+                    n = int(round(n + alpha[2][0]))
+                    SIFT.write_log(log_file, f"New (s,m,n): {s},{m},{n}")
+
+                    if max(alpha) < 0.6:
+                        output.append((o_e,s,m,n,sigma,x,y,omega))
+                        SIFT.write_log(log_file, f"Passed: {o_e},{s},{m},{n},{sigma},{x},{y},{omega}")
+                        break
+                except:
                     break
-                (alpha, omega) = qi
-                gamma_o_e = ((2 ** (o_e - 1)) * self.gamma_min)
-                sigma = (gamma_o_e * self.gamma_min) * self.sig_min * 2**((alpha[0][0] + s)/self.n_spo)
-                x = gamma_o_e * (alpha[1][0] + m)
-                y = gamma_o_e * (alpha[2][0] + n)
-
-                SIFT.write_log(log_file, f"Comparing fields: o {o_e}:{gamma_o_e} gamma")
-                SIFT.write_log(log_file, f"m {m}:{x} x")
-                SIFT.write_log(log_file, f"n {n}:{y} y")
-                s = int(round(s + alpha[0][0]))
-                m = int(round(m + alpha[1][0]))
-                n = int(round(n + alpha[2][0]))
-                SIFT.write_log(log_file, f"New (s,m,n): {s},{m},{n}")
-
-                if max(alpha) < 0.6:
-                    output.append((o_e,s,m,n,sigma,x,y,omega))
-                    SIFT.write_log(log_file, f"Passed: {o_e},{s},{m},{n},{sigma},{x},{y},{omega}")
-                    break;
 
         return output
 
@@ -400,12 +420,15 @@ class SIFT:
         output = []
         SIFT.write_log(log_file, f"Number of extrema: {len(extrema)}")
         for e in extrema:
-            (o,s,m,n,sigma,x,y,omega) = e
-            h = hessian(o,s,m,n)
-            edgeness = (h.trace()**2) / np.linalg.det(h)
-            max_edgeness = ((self.c_edge + 1)**2) / self.c_edge
-            if edgeness < max_edgeness:
-                output.append(e)
+            try:
+                (o,s,m,n,sigma,x,y,omega) = e
+                h = hessian(o,s,m,n)
+                edgeness = (h.trace()**2) / np.linalg.det(h)
+                max_edgeness = ((self.c_edge + 1)**2) / self.c_edge
+                if edgeness < max_edgeness:
+                    output.append(e)
+            except:
+                continue
 
         SIFT.write_log(log_file, f"Number of extrema after edge removal: {len(output)}")
         return output
