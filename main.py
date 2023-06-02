@@ -39,19 +39,12 @@ def main():
     #extrema = sift.read_extrema_from_file(filename=image_path + ".extrema")
     #print("Writing extrema to file")
     #sift.write_extrema_to_file(extrema=extrema, filename=image_path + ".extrema")
-    sift.write_log(log_file, "ALGORITHM 5 ======================================")
-    print("Algorithm 5: Conservative test pass filter of extrema")
-    extrema = sift.extrema_conservative_test(extrema=extrema, diff=diff, log_file=log_file)
     sift.write_log(log_file, "ALGORITHM 6 ======================================")
     print("Algorithm 6: Keypoint interpolation of extrema")
     extrema = sift.keypoints_interpolation(extrema=extrema, diff=diff, log_file=log_file)
     sift.write_log(log_file, "ALGORITHM 8 ======================================")
     print("Algorithm 8: Discard low contrast extrema")
     extrema = sift.discard_low_contrast(extrema=extrema, log_file=log_file)
-
-    sift.write_log(log_file, "ALGORITHM 9 ======================================")
-    print("Algorithm 9: Discard candidates on edges")
-    extrema = sift.discard_edge_keypoints(extrema=extrema, diff=diff, log_file=log_file)
 
     print("Algorithm 10: Compute gradient")
     gradients = sift.compute_gradient_at_scale_space(scale_space=octaves, log_file=log_file)
@@ -61,6 +54,8 @@ def main():
     img = np.array(image)
     for e in extrema:
         (o,s,m,n,sigma,x,y,omega) = e
+#        if s < 0:
+#            print(s)
         for i in range(0, 360, 5):
             offset_x = int(round(math.cos(i * math.pi / 180)*sigma*math.sqrt(2)*6))
             offset_y = int(round(math.sin(i * math.pi / 180)*sigma*math.sqrt(2)*6))
