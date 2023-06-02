@@ -500,7 +500,6 @@ class SIFT:
             output.append((o_key, s_key, x_key, y_key, sigma_key, theta_key))
 
         return output
-
         
     def construct_keypoint_descriptors(self, keypoints, scale_space, gradient):
         lambda_desc = self.lambda_desc
@@ -572,7 +571,7 @@ class SIFT:
 
             output.append((x_key, y_key, sigma_key, theta_key, f))
 
-
+        return output
                 
 
 
