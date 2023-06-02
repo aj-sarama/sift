@@ -1,6 +1,8 @@
 from PIL import Image, ImageFilter, ImageOps, ImageChops
 import numpy as np
 import math
+import time
+from numpy.lib.stride_tricks import sliding_window_view
 
 class SIFT:
     """
@@ -223,30 +225,38 @@ class SIFT:
         @return
         list of {(o, s, m, n)} where m,n = x,y
         """
-        def calculate_neighbors(o,s,x,y):
-            neighbors = []
-            for i in range(-1, 2):
-                for j in range(-1, 2):
-                    for k in range(-1, 2):
-                        if (i == 0 and j == 0 and k == 0):
-                            continue
-                        neighbors.append(diff[o][s + i].getpixel((x + j, y + k)))
-            return neighbors
+        maxes = [[]]
+        mins = [[]]
+        values = [[]]
+        for o in range(1, self.n_oct + 1):
+            maxes.append([])
+            mins.append([])
+            values.append([])
+            for s in range(0, self.n_spo + 2):
+                layer = np.array(diff[o][s])
+                windows = sliding_window_view(layer, window_shape=(3,3))
+                maxes[o].append(np.max(windows, axis=(2,3)))
+                mins[o].append(np.min(windows, axis=(2,3)))
+                values[o].append(layer)
+
 
         extrema = []
-        extrema_count = 0
+        #cutoff = 0.8 * self.dog_threshold
         for o in range(1, self.n_oct + 1):
             for s in range(1, self.n_spo + 1):
-                M_o = diff[o][s].width
-                N_o = diff[o][s].height
-                for x in range(1, M_o - 1):
-                    for y in range(1, N_o - 1):
-                        curr = diff[o][s].getpixel((x,y))
-                        neighbors = calculate_neighbors(o,s,x,y)
-                        if curr > max(neighbors) or curr < min(neighbors):
-                            extrema.append((o,s,x,y))
-                            extrema_count += 1
-                            SIFT.write_log(log_file, f"Extrema {extrema_count}: ({o},{s},{x},{y})")
+                # check cutoff
+                # check extrema
+                centers = values[o][s][1:-1,1:-1]
+                #print(values[o][s].shape, centers.shape, maxes[o][s].shape)
+                is_max = np.logical_and(centers == maxes[o][s], np.logical_and(centers > maxes[o][s-1], centers > maxes[o][s+1]))
+                is_min = np.logical_and(centers == mins[o][s], np.logical_and(centers < mins[o][s-1], centers < mins[o][s+1]))
+                is_threshold = (centers > self.dog_threshold)
+                quality_point = np.logical_and(is_threshold, np.logical_or(is_max, is_min))
+                for x in range(1, centers.shape[0]):
+                    for y in range(1, centers.shape[1]):
+                        if quality_point[x - 1][y - 1]:
+                            extrema.append((o,s,y-1,x-1))
+
         return extrema
 
 
@@ -283,9 +293,9 @@ class SIFT:
         def quadratic_interpolation(o,se,me,ne):
             g = np.zeros((3,1))
             h = np.zeros((3,3))
-            g[0] = (diff[o][se + 1].getpixel((me, ne)) - diff[o][se + 1].getpixel((me, ne))) / 2
-            g[1] = (diff[o][se].getpixel((me + 1, ne)) - diff[o][s].getpixel((me - 1, ne))) / 2
-            g[2] = (diff[o][se].getpixel((me, ne + 1)) - diff[o][s].getpixel((me, ne - 1))) / 2
+            g[0][0] = (diff[o][se + 1].getpixel((me, ne)) - diff[o][se + 1].getpixel((me, ne))) / 2
+            g[1][0] = (diff[o][se].getpixel((me + 1, ne)) - diff[o][s].getpixel((me - 1, ne))) / 2
+            g[2][0] = (diff[o][se].getpixel((me, ne + 1)) - diff[o][s].getpixel((me, ne - 1))) / 2
             
             h = np.zeros((3,3))
             h11 = diff[o][se + 1].getpixel((me, ne)) + diff[o][se - 1].getpixel((me, ne)) - 2*diff[o][se].getpixel((me, ne))
@@ -338,28 +348,31 @@ class SIFT:
             while iterations < 5:
                 iterations += 1
                 SIFT.write_log(log_file, f"Iteration {iterations}")
-                qi = quadratic_interpolation(o_e,s,m,n)
-                if qi is None:
-                    SIFT.write_log(log_file, "Quadratic failed. Singular matrix.")
+                try:
+                    qi = quadratic_interpolation(o_e,s,m,n)
+                    if qi is None:
+                        SIFT.write_log(log_file, "Quadratic failed. Singular matrix.")
+                        break
+                    (alpha, omega) = qi
+                    gamma_o_e = ((2 ** (o_e - 1)) * self.gamma_min)
+                    sigma = (gamma_o_e * self.gamma_min) * self.sig_min * 2**((alpha[0][0] + s)/self.n_spo)
+                    x = gamma_o_e * (alpha[1][0] + m)
+                    y = gamma_o_e * (alpha[2][0] + n)
+
+                    SIFT.write_log(log_file, f"Comparing fields: o {o_e}:{gamma_o_e} gamma")
+                    SIFT.write_log(log_file, f"m {m}:{x} x")
+                    SIFT.write_log(log_file, f"n {n}:{y} y")
+                    s = int(round(s + alpha[0][0]))
+                    m = int(round(m + alpha[1][0]))
+                    n = int(round(n + alpha[2][0]))
+                    SIFT.write_log(log_file, f"New (s,m,n): {s},{m},{n}")
+
+                    if max(alpha) < 0.6 and s >= 0 and s < self.n_spo:
+                        output.append((o_e,s,m,n,sigma,x,y,omega))
+                        SIFT.write_log(log_file, f"Passed: {o_e},{s},{m},{n},{sigma},{x},{y},{omega}")
+                        break
+                except:
                     break
-                (alpha, omega) = qi
-                gamma_o_e = ((2 ** (o_e - 1)) * self.gamma_min)
-                sigma = (gamma_o_e * self.gamma_min) * self.sig_min * 2**((alpha[0][0] + s)/self.n_spo)
-                x = gamma_o_e * (alpha[1][0] + m)
-                y = gamma_o_e * (alpha[2][0] + n)
-
-                SIFT.write_log(log_file, f"Comparing fields: o {o_e}:{gamma_o_e} gamma")
-                SIFT.write_log(log_file, f"m {m}:{x} x")
-                SIFT.write_log(log_file, f"n {n}:{y} y")
-                s = int(round(s + alpha[0][0]))
-                m = int(round(m + alpha[1][0]))
-                n = int(round(n + alpha[2][0]))
-                SIFT.write_log(log_file, f"New (s,m,n): {s},{m},{n}")
-
-                if max(alpha) < 0.6:
-                    output.append((o_e,s,m,n,sigma,x,y,omega))
-                    SIFT.write_log(log_file, f"Passed: {o_e},{s},{m},{n},{sigma},{x},{y},{omega}")
-                    break;
 
         return output
 
@@ -400,12 +413,15 @@ class SIFT:
         output = []
         SIFT.write_log(log_file, f"Number of extrema: {len(extrema)}")
         for e in extrema:
-            (o,s,m,n,sigma,x,y,omega) = e
-            h = hessian(o,s,m,n)
-            edgeness = (h.trace()**2) / np.linalg.det(h)
-            max_edgeness = ((self.c_edge + 1)**2) / self.c_edge
-            if edgeness < max_edgeness:
-                output.append(e)
+            try:
+                (o,s,m,n,sigma,x,y,omega) = e
+                h = hessian(o,s,m,n)
+                edgeness = (h.trace()**2) / np.linalg.det(h)
+                max_edgeness = ((self.c_edge + 1)**2) / self.c_edge
+                if edgeness < max_edgeness:
+                    output.append(e)
+            except:
+                continue
 
         SIFT.write_log(log_file, f"Number of extrema after edge removal: {len(output)}")
         return output
@@ -417,12 +433,8 @@ class SIFT:
             output.append([])
             for s in range(0, self.n_spo + 1):
                 img = np.array(scale_space[o][s])
-                gradient_m = img.copy()
-                gradient_n = img.copy()
-                for m in range(1, scale_space[o][s].height - 1):
-                    for n in range(1, scale_space[o][s].width - 1):
-                        gradient_m[m][n] = (img[m + 1][n] - img[m - 1][n]) / 2
-                        gradient_n[m][n] = (img[m][n + 1] - img[m][n - 1]) / 2
+                gradient_m = (np.roll(img, 1, axis=0) - np.roll(img, -1, axis=0)) / 2
+                gradient_n = (np.roll(img, 1, axis=1) - np.roll(img, -1, axis=1)) / 2
                 output[o].append((gradient_m, gradient_n))
 
         return output
@@ -488,7 +500,6 @@ class SIFT:
             output.append((o_key, s_key, x_key, y_key, sigma_key, theta_key))
 
         return output
-
         
     def construct_keypoint_descriptors(self, keypoints, scale_space, gradient):
         lambda_desc = self.lambda_desc
@@ -560,7 +571,7 @@ class SIFT:
 
             output.append((x_key, y_key, sigma_key, theta_key, f))
 
-
+        return output
                 
 
 
